@@ -1,5 +1,5 @@
-# Keras 
-Initial implementation of Simple Recurrent Unit in Keras.
+# Keras Simple Recurrent Unit (SRU)
+Initial implementation of Simple Recurrent Unit in Keras. Paper - [Training RNNs as Fast as CNNs](https://arxiv.org/abs/1709.02755)
 
 **Note : Does not work perfectly yet**
 
