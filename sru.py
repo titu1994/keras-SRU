@@ -74,7 +74,7 @@ class SRU(Recurrent):
     @interfaces.legacy_recurrent_support
     def __init__(self, units,
                  activation='tanh',
-                 recurrent_activation='hard_sigmoid',
+                 recurrent_activation='sigmoid',
                  use_bias=True,
                  kernel_initializer='glorot_uniform',
                  recurrent_initializer='orthogonal',
@@ -149,7 +149,7 @@ class SRU(Recurrent):
                     ])
             else:
                 bias_initializer = self.bias_initializer
-            self.bias = self.add_weight(shape=(self.units * self.kernel_dim,),
+            self.bias = self.add_weight(shape=(self.units * self.kernel_dim - 1,),
                                         name='bias',
                                         initializer=bias_initializer,
                                         regularizer=self.bias_regularizer,
@@ -167,13 +167,13 @@ class SRU(Recurrent):
             self.kernel_u = None
 
         if self.use_bias:
-            self.bias_w = self.bias[:self.units]
+            # self.bias_w = self.bias[:self.units]
             self.bias_f = self.bias[self.units: self.units * 2]
             self.bias_r = self.bias[self.units * 2: self.units * 3]
             if self.kernel_dim == 4:
                 self.bias_u = self.bias[self.units * 3: self.units * 4]
         else:
-            self.bias_w = None
+            # self.bias_w = None
             self.bias_f = None
             self.bias_r = None
             self.bias_u = None
@@ -185,7 +185,7 @@ class SRU(Recurrent):
             input_dim = input_shape[2]
             timesteps = input_shape[1]
 
-            x_w = _time_distributed_dense(inputs, self.kernel_w, self.bias_w,
+            x_w = _time_distributed_dense(inputs, self.kernel_w, None,
                                           self.dropout, input_dim, self.units,
                                           timesteps, training=training)
             x_f = _time_distributed_dense(inputs, self.kernel_f, self.bias_f,
@@ -219,21 +219,35 @@ class SRU(Recurrent):
 
             dp_mask = [K.in_train_phase(dropped_inputs,
                                         ones,
-                                        training=training) for _ in range(4)]
+                                        training=training) for _ in range(3)]
             constants.append(dp_mask)
         else:
-            constants.append([K.cast_to_floatx(1.) for _ in range(4)])
+            constants.append([K.cast_to_floatx(1.) for _ in range(3)])
+
+        if 0 < self.recurrent_dropout < 1:
+            ones = K.ones_like(K.reshape(inputs[:, 0, 0], (-1, 1)))
+            ones = K.tile(ones, (1, self.units))
+
+            def dropped_inputs():
+                return K.dropout(ones, self.recurrent_dropout)
+            rec_dp_mask = [K.in_train_phase(dropped_inputs,
+                                            ones,
+                                            training=training) for _ in range(3)]
+            constants.append(rec_dp_mask)
+        else:
+            constants.append([K.cast_to_floatx(1.) for _ in range(3)])
 
         constants.append(inputs)  # append the inputs so that we can utilize them in x_t
-
         self.time_step = 0
+
         return constants
 
     def step(self, inputs, states):
-        h_tm1 = states[0]
+        h_tm1 = states[0]  # not used
         c_tm1 = states[1]
         dp_mask = states[2]
-        x_inputs = states[3]
+        rec_dp_mask = states[3]
+        x_inputs = states[4]
 
         # To see correct batch shapes, set batch_input_shape to some value,
         # otherwise the None can be confusing to interpret.
@@ -243,6 +257,7 @@ class SRU(Recurrent):
 
         if self.implementation == 2:
             z = K.dot(inputs * dp_mask[0], self.kernel)
+            z = z * rec_dp_mask[0]
             if self.use_bias:
                 z = K.bias_add(z, self.bias)
 
@@ -270,7 +285,7 @@ class SRU(Recurrent):
             else:
                 raise ValueError('Unknown `implementation` mode.')
 
-            w = x_w
+            w = x_w * rec_dp_mask[0]
             f = self.recurrent_activation(x_f)
             r = self.recurrent_activation(x_r)
 
