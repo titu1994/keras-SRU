@@ -11,7 +11,9 @@ This is overcome by unrolling the RNN. Once unrolled, an internal python variabl
 
 - Input dim must exactly match the number of LSTM cells for now. Still working out how to overcome this problem.
 
-- Performance of a single SRU layer is slightly lower (about 0.5% on average over 5 runs) compared to 1 layer LSTM (at least on IMDB). Haven't tried staking them yet, but this may improve performance.
+- Performance of a single SRU layer is slightly lower (about 0.5% on average over 5 runs) compared to 1 layer LSTM (at least on IMDB, with batch size of 32). Haven't tried staking them yet, but this may improve performance.
+
+Performance degrades substantially with larger batch sizes (about 6-7% on average over 5 runs) compared to 1 layer LSTM with batch size of 128.
 
 - Speed gains arent that impressive at small batch size. At batch size of 32, SRU takes around 32-34 seconds. LSTM takes around 60-70 seconds. Thats just 50% reduction in speed, not the 5-10x that was discussed in the paper. 
 
