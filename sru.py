@@ -228,17 +228,6 @@ class SRU(Recurrent):
         else:
             return output_shape
 
-    # def get_initial_state(self, inputs):
-    #     # build an all-zero tensor of shape (samples, output_dim)
-    #     initial_state = K.zeros_like(inputs)  # (samples, timesteps, input_dim)
-    #     # initial_state_c = K.zeros_like(inputs)  # (samples, timesteps, input_dim)
-    #     # initial_state_c = K.sum(initial_state_c, axis=(1, 2))  # (samples,)
-    #     # initial_state_c = K.expand_dims(initial_state_c)  # (samples, 1)
-    #     # initial_state_c = K.tile(initial_state_c, [1, self.units])  # (samples, output_dim)
-    #     initial_states = [initial_state, initial_state]
-    #
-    #     return initial_states
-
     def get_constants(self, inputs, training=None):
         constants = []
         if self.implementation != 0 and 0 < self.dropout < 1:
@@ -335,9 +324,9 @@ class SRU(Recurrent):
         self.hidden_states_h.append(h)
         self.hidden_states_c.append(c)
 
-        print('timestep : ', self.time_step)
-        print("h shape : ", K.int_shape(h))
-        print("c shape : ", K.int_shape(c))
+        # print('timestep : ', self.time_step)
+        # print("h shape : ", K.int_shape(h))
+        # print("c shape : ", K.int_shape(c))
 
         if 0 < self.dropout + self.recurrent_dropout:
             h._uses_learning_phase = True
