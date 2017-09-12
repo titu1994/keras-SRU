@@ -74,7 +74,7 @@ class SRU(Recurrent):
     @interfaces.legacy_recurrent_support
     def __init__(self, units,
                  activation='tanh',
-                 recurrent_activation='sigmoid',
+                 recurrent_activation='hard_sigmoid',
                  use_bias=True,
                  kernel_initializer='glorot_uniform',
                  recurrent_initializer='orthogonal',
@@ -237,9 +237,9 @@ class SRU(Recurrent):
 
         # To see correct batch shapes, set batch_input_shape to some value,
         # otherwise the None can be confusing to interpret.
-        print("X inputs shape : ", K.int_shape(x_inputs))
-        print('h_tm1 shape: ', K.int_shape(h_tm1))
-        print('c_tm1 shape: ', K.int_shape(c_tm1))
+        # print("X inputs shape : ", K.int_shape(x_inputs))
+        # print('h_tm1 shape: ', K.int_shape(h_tm1))
+        # print('c_tm1 shape: ', K.int_shape(c_tm1))
 
         if self.implementation == 2:
             z = K.dot(inputs * dp_mask[0], self.kernel)
@@ -274,9 +274,9 @@ class SRU(Recurrent):
             f = self.recurrent_activation(x_f)
             r = self.recurrent_activation(x_r)
 
-            print("W shape : ", K.int_shape(w))
-            print("F shape : ", K.int_shape(f))
-            print("R shape : ", K.int_shape(r))
+            # print("W shape : ", K.int_shape(w))
+            # print("F shape : ", K.int_shape(f))
+            # print("R shape : ", K.int_shape(r))
             c = f * c_tm1 + (1 - f) * w
             h = r * self.activation(c) + (1 - r) * x_inputs[:, self.time_step, :]  # x_inputs should not have 0 index
 
