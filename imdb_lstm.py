@@ -18,7 +18,7 @@ from keras.datasets import imdb
 
 max_features = 20000
 maxlen = 80  # cut texts after this number of words (among top max_features most common words)
-batch_size = 32
+batch_size = 128
 
 print('Loading data...')
 (x_train, y_train), (x_test, y_test) = imdb.load_data(num_words=max_features)
@@ -33,7 +33,7 @@ print('x_test shape:', x_test.shape)
 
 print('Build model...')
 model = Sequential()
-model.add(Embedding(max_features, 128, ))  # batch_input_shape=(32, 80)
+model.add(Embedding(max_features, 128, ))
 model.add(LSTM(128, dropout=0.2, recurrent_dropout=0.2, implementation=2))
 model.add(Dense(1, activation='sigmoid'))
 

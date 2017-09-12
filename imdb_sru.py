@@ -20,7 +20,9 @@ from sru import SRU
 
 max_features = 20000
 maxlen = 80  # cut texts after this number of words (among top max_features most common words)
-batch_size = 32
+batch_size = 128
+
+depth = 2
 
 print('Loading data...')
 (x_train, y_train), (x_test, y_test) = imdb.load_data(num_words=max_features)
@@ -35,11 +37,20 @@ print('x_test shape:', x_test.shape)
 
 print('Build model...')
 ip = Input(shape=(80,))
-embed = Embedding(max_features, 128, input_shape=(80,))(ip)  # batch_input_shape=(32, 80)
-outputs = SRU(128, dropout=0.2, recurrent_dropout=0.2, implementation=2, unroll=True)(embed)
-out = Dense(1, activation='sigmoid')(outputs)
+embed = Embedding(max_features, 128)(ip)  # batch_input_shape=(32, 80)
 
-model = Model(ip, out)
+prev_input = embed
+
+if depth > 1:
+    for i in range(depth - 1):
+        _, h, c = SRU(128, dropout=0.0, recurrent_dropout=0.0, implementation=2, unroll=True,
+                      return_state=True)(prev_input)
+        prev_input = h
+
+outputs = SRU(128, dropout=0.0, recurrent_dropout=0.0, implementation=2, unroll=True)(prev_input)
+outputs = Dense(1, activation='sigmoid')(outputs)
+
+model = Model(ip, outputs)
 model.summary()
 
 # try using different optimizers and different optimizer configs

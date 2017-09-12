@@ -115,12 +115,19 @@ class SRU(Recurrent):
         self.state_spec = [InputSpec(shape=(None, self.units)),
                            InputSpec(shape=(None, self.units))]
 
+        # Default to GPU implementation for speed
+        self.implementation = 2
+
     def build(self, input_shape):
         if isinstance(input_shape, list):
             input_shape = input_shape[0]
 
         batch_size = input_shape[0] if self.stateful else None
+        self.time_dim = input_shape[1]
         self.input_dim = input_shape[2]
+
+        assert self.time_dim is not None, "Must specific number of timesteps"
+
         self.input_spec[0] = InputSpec(shape=(batch_size, None, self.input_dim))  # (timesteps, batchsize, inputdim)
 
         self.states = [None, None]
@@ -168,10 +175,10 @@ class SRU(Recurrent):
 
         if self.use_bias:
             # self.bias_w = self.bias[:self.units]
-            self.bias_f = self.bias[self.units: self.units * 2]
-            self.bias_r = self.bias[self.units * 2: self.units * 3]
+            self.bias_f = self.bias[:self.units]
+            self.bias_r = self.bias[self.units: self.units * 2]
             if self.kernel_dim == 4:
-                self.bias_u = self.bias[self.units * 3: self.units * 4]
+                self.bias_u = self.bias[self.units * 2: self.units * 3]
         else:
             # self.bias_w = None
             self.bias_f = None
@@ -206,6 +213,32 @@ class SRU(Recurrent):
         else:
             return inputs
 
+    def compute_output_shape(self, input_shape):
+        if isinstance(input_shape, list):
+            input_shape = input_shape[0]
+
+        if self.return_sequences:
+            output_shape = (input_shape[0], input_shape[1], self.units)
+        else:
+            output_shape = (input_shape[0], self.units)
+
+        if self.return_state:
+            state_shape = [(input_shape[0], input_shape[1], self.units) for _ in range(len(self.states))]
+            return [output_shape] + state_shape
+        else:
+            return output_shape
+
+    # def get_initial_state(self, inputs):
+    #     # build an all-zero tensor of shape (samples, output_dim)
+    #     initial_state = K.zeros_like(inputs)  # (samples, timesteps, input_dim)
+    #     # initial_state_c = K.zeros_like(inputs)  # (samples, timesteps, input_dim)
+    #     # initial_state_c = K.sum(initial_state_c, axis=(1, 2))  # (samples,)
+    #     # initial_state_c = K.expand_dims(initial_state_c)  # (samples, 1)
+    #     # initial_state_c = K.tile(initial_state_c, [1, self.units])  # (samples, output_dim)
+    #     initial_states = [initial_state, initial_state]
+    #
+    #     return initial_states
+
     def get_constants(self, inputs, training=None):
         constants = []
         if self.implementation != 0 and 0 < self.dropout < 1:
@@ -238,7 +271,10 @@ class SRU(Recurrent):
             constants.append([K.cast_to_floatx(1.) for _ in range(3)])
 
         constants.append(inputs)  # append the inputs so that we can utilize them in x_t
+
         self.time_step = 0
+        self.hidden_states_h = []
+        self.hidden_states_c = []
 
         return constants
 
@@ -296,10 +332,94 @@ class SRU(Recurrent):
             h = r * self.activation(c) + (1 - r) * x_inputs[:, self.time_step, :]  # x_inputs should not have 0 index
 
         self.time_step += 1
+        self.hidden_states_h.append(h)
+        self.hidden_states_c.append(c)
+
         print('timestep : ', self.time_step)
+        print("h shape : ", K.int_shape(h))
+        print("c shape : ", K.int_shape(c))
+
         if 0 < self.dropout + self.recurrent_dropout:
             h._uses_learning_phase = True
+
         return h, [h, c]
+
+    def call(self, inputs, mask=None, training=None, initial_state=None):
+        # input shape: `(samples, time (padded with zeros), input_dim)`
+        # note that the .build() method of subclasses MUST define
+        # self.input_spec and self.state_spec with complete input shapes.
+        if isinstance(inputs, list):
+            initial_state = inputs[1:]
+            inputs = inputs[0]
+        elif initial_state is not None:
+            pass
+        elif self.stateful:
+            initial_state = self.states
+        else:
+            initial_state = self.get_initial_state(inputs)
+
+        if isinstance(mask, list):
+            mask = mask[0]
+
+        if len(initial_state) != len(self.states):
+            raise ValueError('Layer has ' + str(len(self.states)) +
+                             ' states but was passed ' +
+                             str(len(initial_state)) +
+                             ' initial states.')
+        input_shape = K.int_shape(inputs)
+        timesteps = input_shape[1]
+        if self.unroll and timesteps in [None, 1]:
+            raise ValueError('Cannot unroll a RNN if the '
+                             'time dimension is undefined or equal to 1. \n'
+                             '- If using a Sequential model, '
+                             'specify the time dimension by passing '
+                             'an `input_shape` or `batch_input_shape` '
+                             'argument to your first layer. If your '
+                             'first layer is an Embedding, you can '
+                             'also use the `input_length` argument.\n'
+                             '- If using the functional API, specify '
+                             'the time dimension by passing a `shape` '
+                             'or `batch_shape` argument to your Input layer.')
+        constants = self.get_constants(inputs, training=None)
+        preprocessed_input = self.preprocess_input(inputs, training=None)
+        last_output, outputs, states = K.rnn(self.step,
+                                             preprocessed_input,
+                                             initial_state,
+                                             go_backwards=self.go_backwards,
+                                             mask=mask,
+                                             constants=constants,
+                                             unroll=self.unroll,
+                                             input_length=timesteps)
+        if self.stateful:
+            updates = []
+            for i in range(len(states)):
+                updates.append((self.states[i], states[i]))
+            self.add_update(updates, inputs)
+
+        # Properly set learning phase
+        if 0 < self.dropout + self.recurrent_dropout:
+            last_output._uses_learning_phase = True
+            outputs._uses_learning_phase = True
+
+        if self.return_sequences:
+            output = outputs
+        else:
+            output = last_output
+
+        if self.return_state:
+            # if not isinstance(states, (list, tuple)):
+            #     states = [states]
+            # else:
+            #     states = list(states)
+            h_states = K.stack(self.hidden_states_h)  # (timesteps, batchsize, outputdim)
+            c_states = K.stack(self.hidden_states_c)  # (timesteps, batchsize, outputdim)
+            h_states = K.permute_dimensions(h_states, (1, 0, 2))  # (batchsize, timesteps, outputdim)
+            c_states = K.permute_dimensions(c_states, (1, 0, 2))  # (batchsize, timesteps, outputdim)
+
+            states = [h_states, c_states]
+            return [output] + states
+        else:
+            return output
 
     def get_config(self):
         config = {'units': self.units,
