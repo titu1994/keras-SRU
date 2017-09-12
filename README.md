@@ -1,7 +1,7 @@
 # Keras 
 Initial implementation of Simple Recurrent Unit in Keras.
 
-**Note : Does not work perfectly yet **
+**Note : Does not work perfectly yet**
 
 # Issues
 
