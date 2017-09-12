@@ -279,7 +279,7 @@ class SRU(Recurrent):
                 x_f = inputs[:, self.units: 2 * self.units]
                 x_r = inputs[:, 2 * self.units: 3 * self.units]
             elif self.implementation == 1:
-                x_w = K.dot(inputs * dp_mask[0], self.kernel_w) + self.bias_w
+                x_w = K.dot(inputs * dp_mask[0], self.kernel_w)
                 x_f = K.dot(inputs * dp_mask[1], self.kernel_f) + self.bias_f
                 x_r = K.dot(inputs * dp_mask[2], self.kernel_r) + self.bias_r
             else:
