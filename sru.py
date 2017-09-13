@@ -154,11 +154,11 @@ class SRU(Recurrent):
                     return K.concatenate([
                         self.bias_initializer((self.units,), *args, **kwargs),
                         initializers.Ones()((self.units,), *args, **kwargs),
-                        self.bias_initializer((self.units,), *args, **kwargs),
                     ])
             else:
                 bias_initializer = self.bias_initializer
-            self.bias = self.add_weight(shape=(self.units * self.kernel_dim - 1,),
+
+            self.bias = self.add_weight(shape=(self.units * 2,),
                                         name='bias',
                                         initializer=bias_initializer,
                                         regularizer=self.bias_regularizer,
@@ -171,21 +171,16 @@ class SRU(Recurrent):
         self.kernel_r = self.kernel[:, self.units * 2: self.units * 3]
 
         if self.kernel_dim == 4:
-            self.kernel_u = self.kernel[:, self.units * 3: self.units * 4]
+            self.kernel_w_x = self.kernel[:, self.units * 3: self.units * 4]
         else:
-            self.kernel_u = None
+            self.kernel_w_x = None
 
         if self.use_bias:
-            # self.bias_w = self.bias[:self.units]
             self.bias_f = self.bias[:self.units]
             self.bias_r = self.bias[self.units: self.units * 2]
-            if self.kernel_dim == 4:
-                self.bias_u = self.bias[self.units * 2: self.units * 3]
         else:
-            # self.bias_w = None
             self.bias_f = None
             self.bias_r = None
-            self.bias_u = None
         self.built = True
 
     def preprocess_input(self, inputs, training=None):
@@ -205,11 +200,11 @@ class SRU(Recurrent):
                                           timesteps, training=training)
 
             if self.kernel_dim == 4:
-                x_u = _time_distributed_dense(inputs, self.kernel_u, self.bias_u,
-                                              self.dropout, input_dim, self.units,
-                                              timesteps, training=training)
+                x_w_x = _time_distributed_dense(inputs, self.kernel_w_x, None,
+                                                self.dropout, input_dim, self.units,
+                                                timesteps, training=training)
 
-                return K.concatenate([x_w, x_f, x_r, x_u], axis=2)
+                return K.concatenate([x_w, x_f, x_r, x_w_x], axis=2)
             else:
                 return K.concatenate([x_w, x_f, x_r], axis=2)
         else:
@@ -225,7 +220,7 @@ class SRU(Recurrent):
             output_shape = (input_shape[0], self.units)
 
         if self.return_state:
-            state_shape = [(input_shape[0], input_shape[1], self.units) for _ in range(len(self.states))]
+            state_shape = [(input_shape[0], input_shape[1], self.units), (input_shape[0], self.units)]
             return [output_shape] + state_shape
         else:
             return output_shape
@@ -250,22 +245,19 @@ class SRU(Recurrent):
 
         if 0 < self.recurrent_dropout < 1:
             ones = K.ones_like(K.reshape(inputs[:, 0, 0], (-1, 1)))
-            ones = K.tile(ones, (1, self.units))
+            ones = K.tile(ones, (1, self.units * self.kernel_dim))
 
             def dropped_inputs():
                 return K.dropout(ones, self.recurrent_dropout)
             rec_dp_mask = [K.in_train_phase(dropped_inputs,
                                             ones,
-                                            training=training) for _ in range(3)]
+                                            training=training) for _ in range(self.kernel_dim)]
             constants.append(rec_dp_mask)
         else:
-            constants.append([K.cast_to_floatx(1.) for _ in range(3)])
+            constants.append([K.cast_to_floatx(1.) for _ in range(self.kernel_dim)])
 
-        constants.append(inputs)  # append the inputs so that we can utilize them in x_t
-
-        self.time_step = 0
+        # maintain a list of all previous hidden states h
         self.hidden_states_h = []
-        self.hidden_states_c = []
 
         return constants
 
@@ -274,41 +266,51 @@ class SRU(Recurrent):
         c_tm1 = states[1]
         dp_mask = states[2]
         rec_dp_mask = states[3]
-        x_inputs = states[4]
-
-        # To see correct batch shapes, set batch_input_shape to some value,
-        # otherwise the None can be confusing to interpret.
-        # print("X inputs shape : ", K.int_shape(x_inputs))
-        # print('h_tm1 shape: ', K.int_shape(h_tm1))
-        # print('c_tm1 shape: ', K.int_shape(c_tm1))
 
         if self.implementation == 2:
             z = K.dot(inputs * dp_mask[0], self.kernel)
             z = z * rec_dp_mask[0]
-            if self.use_bias:
-                z = K.bias_add(z, self.bias)
 
             z0 = z[:, :self.units]
-            z1 = z[:, self.units: 2 * self.units]
-            z2 = z[:, 2 * self.units: 3 * self.units]
+
+            if self.use_bias:
+                z_bias = K.bias_add(z[:, self.units: self.units * 3], self.bias)
+                z1 = z_bias[:, :self.units]
+                z2 = z_bias[:, self.units: 2 * self.units]
+            else:
+                z1 = z[:, self.units: 2 * self.units]
+                z2 = z[:, 2 * self.units: 3 * self.units]
+
+            if self.kernel_dim == 4:
+                z3 = z[:, 3 * self.units: 4 * self.units]
+            else:
+                z3 = None
 
             f = self.recurrent_activation(z1)
             r = self.recurrent_activation(z2)
 
-            # print("W shape : ", K.int_shape(z0))
-            # print("F shape : ", K.int_shape(f))
-            # print("R shape : ", K.int_shape(r))
             c = f * c_tm1 + (1 - f) * z0
-            h = r * self.activation(c) + (1 - r) * x_inputs[:, self.time_step, :]  # x_inputs should not have 0 index
+            if self.kernel_dim == 4:
+                h = r * self.activation(c) + (1 - r) * z3
+            else:
+                h = r * self.activation(c) + (1 - r) * inputs
         else:
             if self.implementation == 0:
                 x_w = inputs[:, :self.units]
                 x_f = inputs[:, self.units: 2 * self.units]
                 x_r = inputs[:, 2 * self.units: 3 * self.units]
+                if self.kernel_dim == 4:
+                    x_w_x = inputs[:, 3 * self.units: 4 * self.units]
+                else:
+                    x_w_x = None
             elif self.implementation == 1:
                 x_w = K.dot(inputs * dp_mask[0], self.kernel_w)
                 x_f = K.dot(inputs * dp_mask[1], self.kernel_f) + self.bias_f
                 x_r = K.dot(inputs * dp_mask[2], self.kernel_r) + self.bias_r
+                if self.kernel_dim == 4:
+                    x_w_x = K.dot(inputs * dp_mask[0], self.kernel_w_x)
+                else:
+                    x_w_x = None
             else:
                 raise ValueError('Unknown `implementation` mode.')
 
@@ -316,19 +318,13 @@ class SRU(Recurrent):
             f = self.recurrent_activation(x_f)
             r = self.recurrent_activation(x_r)
 
-            # print("W shape : ", K.int_shape(w))
-            # print("F shape : ", K.int_shape(f))
-            # print("R shape : ", K.int_shape(r))
             c = f * c_tm1 + (1 - f) * w
-            h = r * self.activation(c) + (1 - r) * x_inputs[:, self.time_step, :]  # x_inputs should not have 0 index
+            if self.kernel_dim == 4:
+                h = r * self.activation(c) + (1 - r) * x_w_x
+            else:
+                h = r * self.activation(c) + (1 - r) * inputs
 
-        self.time_step += 1
         self.hidden_states_h.append(h)
-        self.hidden_states_c.append(c)
-
-        # print('timestep : ', self.time_step)
-        # print("h shape : ", K.int_shape(h))
-        # print("c shape : ", K.int_shape(c))
 
         if 0 < self.dropout + self.recurrent_dropout:
             h._uses_learning_phase = True
@@ -398,16 +394,15 @@ class SRU(Recurrent):
             output = last_output
 
         if self.return_state:
-            # if not isinstance(states, (list, tuple)):
-            #     states = [states]
-            # else:
-            #     states = list(states)
+            if not isinstance(states, (list, tuple)):
+                states = [states]
+            else:
+                states = list(states)
             h_states = K.stack(self.hidden_states_h)  # (timesteps, batchsize, outputdim)
-            c_states = K.stack(self.hidden_states_c)  # (timesteps, batchsize, outputdim)
             h_states = K.permute_dimensions(h_states, (1, 0, 2))  # (batchsize, timesteps, outputdim)
-            c_states = K.permute_dimensions(c_states, (1, 0, 2))  # (batchsize, timesteps, outputdim)
+            c_state = states[-1]  # (batchsize, outputdim)
 
-            states = [h_states, c_states]
+            states = [h_states, c_state]
             return [output] + states
         else:
             return output

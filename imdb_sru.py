@@ -22,7 +22,7 @@ max_features = 20000
 maxlen = 80  # cut texts after this number of words (among top max_features most common words)
 batch_size = 128
 
-depth = 2
+depth = 1
 
 print('Loading data...')
 (x_train, y_train), (x_test, y_test) = imdb.load_data(num_words=max_features)
@@ -37,17 +37,18 @@ print('x_test shape:', x_test.shape)
 
 print('Build model...')
 ip = Input(shape=(80,))
-embed = Embedding(max_features, 128)(ip)  # batch_input_shape=(32, 80)
+embed = Embedding(max_features, 128)(ip)
 
 prev_input = embed
+hidden_states = []
 
 if depth > 1:
     for i in range(depth - 1):
-        _, h, c = SRU(128, dropout=0.0, recurrent_dropout=0.0, implementation=2, unroll=True,
-                      return_state=True)(prev_input)
+        _, h, c = SRU(128, dropout=0.2, recurrent_dropout=0.2, return_state=True)(prev_input)
         prev_input = h
+        hidden_states.append(c)
 
-outputs = SRU(128, dropout=0.0, recurrent_dropout=0.0, implementation=2, unroll=True)(prev_input)
+outputs = SRU(128, dropout=0.2, recurrent_dropout=0.2)(prev_input)
 outputs = Dense(1, activation='sigmoid')(outputs)
 
 model = Model(ip, outputs)
