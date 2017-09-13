@@ -20,6 +20,8 @@ max_features = 20000
 maxlen = 80  # cut texts after this number of words (among top max_features most common words)
 batch_size = 128
 
+depth = 1
+
 print('Loading data...')
 (x_train, y_train), (x_test, y_test) = imdb.load_data(num_words=max_features)
 print(len(x_train), 'train sequences')
@@ -34,7 +36,12 @@ print('x_test shape:', x_test.shape)
 print('Build model...')
 model = Sequential()
 model.add(Embedding(max_features, 128, ))
-model.add(LSTM(128, dropout=0.2, recurrent_dropout=0.2, implementation=2))
+
+if depth > 1:
+    for i in range(depth - 1):
+        model.add(LSTM(128, dropout=0.2, recurrent_dropout=0.2, return_sequences=True))
+
+model.add(LSTM(128, dropout=0.2, recurrent_dropout=0.2))
 model.add(Dense(1, activation='sigmoid'))
 
 model.summary()

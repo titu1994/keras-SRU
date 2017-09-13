@@ -2,11 +2,7 @@
 The dataset is actually too small for LSTM to be of any advantage
 compared to simpler, much faster methods such as TF-IDF + LogReg.
 Notes:
-- RNNs are tricky. Choice of batch size is important,
-choice of loss and optimizer is critical, etc.
-Some configurations won't converge.
-- LSTM loss decrease patterns during training can be quite different
-from what you see with CNNs/MLPs/etc.
+- Increase depth to obtain similar performance to LSTM
 '''
 from __future__ import print_function
 
@@ -36,7 +32,7 @@ print('x_train shape:', x_train.shape)
 print('x_test shape:', x_test.shape)
 
 print('Build model...')
-ip = Input(shape=(80,))
+ip = Input(shape=(maxlen,))
 embed = Embedding(max_features, 128)(ip)
 
 prev_input = embed
@@ -44,11 +40,13 @@ hidden_states = []
 
 if depth > 1:
     for i in range(depth - 1):
-        _, h, c = SRU(128, dropout=0.2, recurrent_dropout=0.2, return_state=True)(prev_input)
+        h, h_final, c_final = SRU(128, dropout=0.0, recurrent_dropout=0.0,
+                                  return_sequences=True, return_state=True,
+                                  unroll=True)(prev_input)
         prev_input = h
-        hidden_states.append(c)
+        hidden_states.append(c_final)
 
-outputs = SRU(128, dropout=0.2, recurrent_dropout=0.2)(prev_input)
+outputs = SRU(128, dropout=0.0, recurrent_dropout=0.0, unroll=True)(prev_input)
 outputs = Dense(1, activation='sigmoid')(outputs)
 
 model = Model(ip, outputs)

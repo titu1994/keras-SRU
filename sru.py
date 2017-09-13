@@ -6,7 +6,6 @@ from keras import activations
 from keras import initializers
 from keras import regularizers
 from keras import constraints
-from keras.engine import Layer
 from keras.engine import InputSpec
 from keras.legacy import interfaces
 from keras.layers import Recurrent
@@ -26,6 +25,7 @@ class SRU(Recurrent):
             for the recurrent step
             (see [activations](../activations.md)).
         use_bias: Boolean, whether the layer uses a bias vector.
+        project_input: Add a projection vector to the input
         kernel_initializer: Initializer for the `kernel` weights matrix,
             used for the linear transformation of the inputs.
             (see [initializers](../initializers.md)).
@@ -64,20 +64,32 @@ class SRU(Recurrent):
         recurrent_dropout: Float between 0 and 1.
             Fraction of the units to drop for
             the linear transformation of the recurrent state.
-        implementation: Mode 2 implementation is to maximize performance
-            when training on GPU
+        implementation: one of {0, 1, or 2}.
+            If set to 0, the SRU will use
+            an implementation that uses fewer, larger matrix products,
+            thus running faster on CPU but consuming more memory.
+            If set to 1, the SRU will use more matrix products,
+            but smaller ones, thus running slower
+            (may actually be faster on GPU) while consuming less memory.
+            If set to 2, the SRU will combine the input gate,
+            the forget gate and the output gate into a single matrix,
+            enabling more time-efficient parallelization on the GPU.
+            Note: SRU dropout must be shared for all gates,
+            resulting in a slightly reduced regularization.
 
     # References
         - [Long short-term memory](http://www.bioinf.jku.at/publications/older/2604.pdf) (original 1997 paper)
         - [Learning to forget: Continual prediction with LSTM](http://www.mitpressjournals.org/doi/pdf/10.1162/089976600300015015)
         - [Supervised sequence labeling with recurrent neural networks](http://www.cs.toronto.edu/~graves/preprint.pdf)
         - [A Theoretically Grounded Application of Dropout in Recurrent Neural Networks](http://arxiv.org/abs/1512.05287)
+        - [Training RNNs as Fast as CNNs](https://arxiv.org/abs/1709.02755)
     """
     @interfaces.legacy_recurrent_support
     def __init__(self, units,
                  activation='tanh',
                  recurrent_activation='sigmoid',
                  use_bias=True,
+                 project_input=False,
                  kernel_initializer='glorot_uniform',
                  recurrent_initializer='orthogonal',
                  bias_initializer='zeros',
@@ -98,6 +110,7 @@ class SRU(Recurrent):
         self.activation = activations.get(activation)
         self.recurrent_activation = activations.get(recurrent_activation)
         self.use_bias = use_bias
+        self.project_input = project_input
 
         self.kernel_initializer = initializers.get(kernel_initializer)
         self.recurrent_initializer = initializers.get(recurrent_initializer)
@@ -125,23 +138,20 @@ class SRU(Recurrent):
             input_shape = input_shape[0]
 
         batch_size = input_shape[0] if self.stateful else None
-        self.time_dim = input_shape[1]
         self.input_dim = input_shape[2]
-
-        assert self.time_dim is not None, "Must specific number of timesteps"
-
         self.input_spec[0] = InputSpec(shape=(batch_size, None, self.input_dim))  # (timesteps, batchsize, inputdim)
 
         self.states = [None, None]
         if self.stateful:
             self.reset_states()
 
-        # There may be cases where input dim does not match output units.
-        # In such a case, the code in pytorch adds another set of weights
-        # to bring the intermediate shape to the correct dimentions.
-        # Here, I call it the `u` kernel, though it doesnt have any specific
-        # implementation yet.
-        self.kernel_dim = 3 if self.input_dim == self.units else 4
+        if self.project_input:
+            self.kernel_dim = 4
+        elif self.input_dim != self.units:
+            self.kernel_dim = 4
+        else:
+            self.kernel_dim = 3
+
         self.kernel = self.add_weight(shape=(self.input_dim, self.units * self.kernel_dim),
                                       name='kernel',
                                       initializer=self.kernel_initializer,
@@ -171,9 +181,9 @@ class SRU(Recurrent):
         self.kernel_r = self.kernel[:, self.units * 2: self.units * 3]
 
         if self.kernel_dim == 4:
-            self.kernel_w_x = self.kernel[:, self.units * 3: self.units * 4]
+            self.kernel_p = self.kernel[:, self.units * 3: self.units * 4]
         else:
-            self.kernel_w_x = None
+            self.kernel_p = None
 
         if self.use_bias:
             self.bias_f = self.bias[:self.units]
@@ -199,31 +209,19 @@ class SRU(Recurrent):
                                           self.dropout, input_dim, self.units,
                                           timesteps, training=training)
 
-            if self.kernel_dim == 4:
-                x_w_x = _time_distributed_dense(inputs, self.kernel_w_x, None,
-                                                self.dropout, input_dim, self.units,
-                                                timesteps, training=training)
+            x_f = self.recurrent_activation(x_f)
+            x_r = self.recurrent_activation(x_r)
 
-                return K.concatenate([x_w, x_f, x_r, x_w_x], axis=2)
+            if self.kernel_dim == 4:
+                x_p = _time_distributed_dense(inputs, self.kernel_p, None,
+                                              self.dropout, input_dim, self.units,
+                                              timesteps, training=training)
+
+                return K.concatenate([x_w, x_f, x_r, x_p], axis=2)
             else:
                 return K.concatenate([x_w, x_f, x_r], axis=2)
         else:
             return inputs
-
-    def compute_output_shape(self, input_shape):
-        if isinstance(input_shape, list):
-            input_shape = input_shape[0]
-
-        if self.return_sequences:
-            output_shape = (input_shape[0], input_shape[1], self.units)
-        else:
-            output_shape = (input_shape[0], self.units)
-
-        if self.return_state:
-            state_shape = [(input_shape[0], input_shape[1], self.units), (input_shape[0], self.units)]
-            return [output_shape] + state_shape
-        else:
-            return output_shape
 
     def get_constants(self, inputs, training=None):
         constants = []
@@ -255,10 +253,6 @@ class SRU(Recurrent):
             constants.append(rec_dp_mask)
         else:
             constants.append([K.cast_to_floatx(1.) for _ in range(self.kernel_dim)])
-
-        # maintain a list of all previous hidden states h
-        self.hidden_states_h = []
-
         return constants
 
     def step(self, inputs, states):
@@ -275,6 +269,7 @@ class SRU(Recurrent):
 
             if self.use_bias:
                 z_bias = K.bias_add(z[:, self.units: self.units * 3], self.bias)
+                z_bias = self.recurrent_activation(z_bias)
                 z1 = z_bias[:, :self.units]
                 z2 = z_bias[:, self.units: 2 * self.units]
             else:
@@ -286,8 +281,8 @@ class SRU(Recurrent):
             else:
                 z3 = None
 
-            f = self.recurrent_activation(z1)
-            r = self.recurrent_activation(z2)
+            f = z1
+            r = z2
 
             c = f * c_tm1 + (1 - f) * z0
             if self.kernel_dim == 4:
@@ -307,16 +302,20 @@ class SRU(Recurrent):
                 x_w = K.dot(inputs * dp_mask[0], self.kernel_w)
                 x_f = K.dot(inputs * dp_mask[1], self.kernel_f) + self.bias_f
                 x_r = K.dot(inputs * dp_mask[2], self.kernel_r) + self.bias_r
+
+                x_f = self.recurrent_activation(x_f)
+                x_r = self.recurrent_activation(x_r)
+
                 if self.kernel_dim == 4:
-                    x_w_x = K.dot(inputs * dp_mask[0], self.kernel_w_x)
+                    x_w_x = K.dot(inputs * dp_mask[0], self.kernel_p)
                 else:
                     x_w_x = None
             else:
                 raise ValueError('Unknown `implementation` mode.')
 
             w = x_w * rec_dp_mask[0]
-            f = self.recurrent_activation(x_f)
-            r = self.recurrent_activation(x_r)
+            f = x_f
+            r = x_r
 
             c = f * c_tm1 + (1 - f) * w
             if self.kernel_dim == 4:
@@ -324,88 +323,10 @@ class SRU(Recurrent):
             else:
                 h = r * self.activation(c) + (1 - r) * inputs
 
-        self.hidden_states_h.append(h)
-
         if 0 < self.dropout + self.recurrent_dropout:
             h._uses_learning_phase = True
 
         return h, [h, c]
-
-    def call(self, inputs, mask=None, training=None, initial_state=None):
-        # input shape: `(samples, time (padded with zeros), input_dim)`
-        # note that the .build() method of subclasses MUST define
-        # self.input_spec and self.state_spec with complete input shapes.
-        if isinstance(inputs, list):
-            initial_state = inputs[1:]
-            inputs = inputs[0]
-        elif initial_state is not None:
-            pass
-        elif self.stateful:
-            initial_state = self.states
-        else:
-            initial_state = self.get_initial_state(inputs)
-
-        if isinstance(mask, list):
-            mask = mask[0]
-
-        if len(initial_state) != len(self.states):
-            raise ValueError('Layer has ' + str(len(self.states)) +
-                             ' states but was passed ' +
-                             str(len(initial_state)) +
-                             ' initial states.')
-        input_shape = K.int_shape(inputs)
-        timesteps = input_shape[1]
-        if self.unroll and timesteps in [None, 1]:
-            raise ValueError('Cannot unroll a RNN if the '
-                             'time dimension is undefined or equal to 1. \n'
-                             '- If using a Sequential model, '
-                             'specify the time dimension by passing '
-                             'an `input_shape` or `batch_input_shape` '
-                             'argument to your first layer. If your '
-                             'first layer is an Embedding, you can '
-                             'also use the `input_length` argument.\n'
-                             '- If using the functional API, specify '
-                             'the time dimension by passing a `shape` '
-                             'or `batch_shape` argument to your Input layer.')
-        constants = self.get_constants(inputs, training=None)
-        preprocessed_input = self.preprocess_input(inputs, training=None)
-        last_output, outputs, states = K.rnn(self.step,
-                                             preprocessed_input,
-                                             initial_state,
-                                             go_backwards=self.go_backwards,
-                                             mask=mask,
-                                             constants=constants,
-                                             unroll=self.unroll,
-                                             input_length=timesteps)
-        if self.stateful:
-            updates = []
-            for i in range(len(states)):
-                updates.append((self.states[i], states[i]))
-            self.add_update(updates, inputs)
-
-        # Properly set learning phase
-        if 0 < self.dropout + self.recurrent_dropout:
-            last_output._uses_learning_phase = True
-            outputs._uses_learning_phase = True
-
-        if self.return_sequences:
-            output = outputs
-        else:
-            output = last_output
-
-        if self.return_state:
-            if not isinstance(states, (list, tuple)):
-                states = [states]
-            else:
-                states = list(states)
-            h_states = K.stack(self.hidden_states_h)  # (timesteps, batchsize, outputdim)
-            h_states = K.permute_dimensions(h_states, (1, 0, 2))  # (batchsize, timesteps, outputdim)
-            c_state = states[-1]  # (batchsize, outputdim)
-
-            states = [h_states, c_state]
-            return [output] + states
-        else:
-            return output
 
     def get_config(self):
         config = {'units': self.units,
