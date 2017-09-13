@@ -64,6 +64,8 @@ class SRU(Recurrent):
         recurrent_dropout: Float between 0 and 1.
             Fraction of the units to drop for
             the linear transformation of the recurrent state.
+        implementation: Mode 2 implementation is to maximize performance
+            when training on GPU
 
     # References
         - [Long short-term memory](http://www.bioinf.jku.at/publications/older/2604.pdf) (original 1997 paper)
@@ -89,6 +91,7 @@ class SRU(Recurrent):
                  bias_constraint=None,
                  dropout=0.,
                  recurrent_dropout=0.,
+                 implementation=2,
                  **kwargs):
         super(SRU, self).__init__(**kwargs)
         self.units = units
@@ -115,8 +118,7 @@ class SRU(Recurrent):
         self.state_spec = [InputSpec(shape=(None, self.units)),
                            InputSpec(shape=(None, self.units))]
 
-        # Default to GPU implementation for speed
-        self.implementation = 2
+        self.implementation = implementation
 
     def build(self, input_shape):
         if isinstance(input_shape, list):
